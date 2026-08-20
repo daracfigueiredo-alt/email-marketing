@@ -1,0 +1,441 @@
+// Schema do sistema de E-mail Marketing + ChatGuru
+// Rode `npx prisma migrate dev` após configurar DATABASE_URL
+//
+// v2: inclui contas de e-mail multi-usuário, notificações, webhook (idempotência),
+// fila de envio, lista de supressão (opt-out) e status estendidos do lead —
+// conforme roteiro complementar (seções 10 a 61).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Perfil {
+  ADMINISTRADOR
+  SUPERVISOR
+  OPERADOR
+}
+
+enum StatusUsuario {
+  ATIVO
+  INATIVO
+}
+
+// Seção 11 do roteiro complementar
+enum StatusLead {
+  NOVO
+  EM_REMARKETING
+  EMAIL_ENVIADO
+  RESPONDEU
+  EM_ATENDIMENTO
+  INTERESSADO
+  REUNIAO
+  CONVERTIDO
+  NAO_INTERESSADO
+  ENCERRADO
+  BLOQUEADO
+  OPT_OUT
+}
+
+enum StatusCampanha {
+  ATIVA
+  PAUSADA
+  CONCLUIDA
+}
+
+enum StatusChatGuru {
+  NAO_SINCRONIZADO
+  SINCRONIZADO
+  ERRO
+}
+
+enum DirecaoMensagem {
+  ENVIADA
+  RECEBIDA
+}
+
+enum StatusEnvio {
+  PENDENTE
+  ENVIADO
+  ENTREGUE
+  FALHOU
+}
+
+// Status da fila de disparo (seção 47)
+enum StatusFila {
+  PENDENTE
+  PROCESSANDO
+  ENVIADO
+  FALHOU
+  CANCELADO
+  BLOQUEADO
+}
+
+enum ProvedorEmail {
+  GMAIL
+  GOOGLE_WORKSPACE
+  OUTLOOK
+  MICROSOFT_365
+}
+
+// Pastas da Caixa de Entrada (seção 17). Mensagens recebidas nunca são movidas
+// automaticamente para SPAM/LIXEIRA — essa é uma ação manual do usuário (seção 18).
+enum PastaMensagem {
+  ENTRADA
+  ENVIADOS
+  RASCUNHOS
+  ARQUIVADOS
+  IMPORTANTES
+  LIXEIRA
+  SPAM
+}
+
+enum TipoNotificacao {
+  NOVA_RESPOSTA
+  ERRO_ENVIO
+  CAMPANHA_CONCLUIDA
+  ERRO_CHATGURU
+  CONTA_EMAIL_DESCONECTADA
+  LEAD_INTERESSADO
+  NOVO_ATENDIMENTO
+}
+
+model Usuario {
+  id           String         @id @default(cuid())
+  nome         String
+  email        String         @unique
+  login        String         @unique
+  senhaHash    String
+  perfil       Perfil         @default(OPERADOR)
+  status       StatusUsuario  @default(ATIVO)
+  criadoEm     DateTime       @default(now())
+  ultimoAcesso DateTime?
+
+  leadsResponsavel  Lead[]          @relation("LeadResponsavel")
+  campanhasCriadas  Campanha[]      @relation("CampanhaCriador")
+  campanhasResponsavel Campanha[]   @relation("CampanhaResponsavel")
+  mensagensEnviadas Mensagem[]      @relation("MensagemUsuario")
+  auditoria         LogAuditoria[]  @relation("AuditoriaUsuario")
+  contasEmail       ContaEmail[]
+  notificacoes      Notificacao[]
+  sessoes           SessaoLogin[]
+
+  @@map("usuarios")
+}
+
+// Seção 27/28/29 — contas de e-mail conectadas via OAuth (multi-conta)
+model ContaEmail {
+  id            String         @id @default(cuid())
+  usuarioId     String
+  usuario       Usuario        @relation(fields: [usuarioId], references: [id])
+  provedor      ProvedorEmail
+  emailConta    String         @unique
+  nomeRemetente String // ex: "Lilian — Almeida & Oliveira"
+  ativa         Boolean        @default(true)
+  // tokens de OAuth NUNCA ficam aqui em texto puro em produção — usar um cofre de
+  // segredos (ex: KMS/Vault) e guardar apenas uma referência/ID aqui.
+  refreshTokenRef String?
+  criadoEm      DateTime       @default(now())
+
+  // Limites de disparo (seção 30)
+  limitePorHora  Int  @default(30)
+  limitePorDia   Int  @default(200)
+  intervaloSegundosEntreEnvios Int @default(20)
+  horarioInicioPermitido String @default("08:00")
+  horarioFimPermitido    String @default("19:00")
+  diasSemanaPermitidos   Int[]  @default([1,2,3,4,5]) // 0=domingo ... 6=sábado
+
+  campanhas Campanha[]
+
+  @@map("contas_email")
+}
+
+model Lead {
+  id        String   @id @default(cuid())
+  nome      String
+  email     String?
+  telefone  String?
+  empresa   String?
+  documento String? // CPF/CNPJ
+  observacao String?
+
+  status         StatusLead @default(NOVO)
+  optOut         Boolean    @default(false)
+  optOutEm       DateTime?
+  bloqueado      Boolean    @default(false)
+
+  responsavelId  String?
+  responsavel    Usuario?   @relation("LeadResponsavel", fields: [responsavelId], references: [id])
+
+  campanhaId     String?
+  campanha       Campanha?  @relation(fields: [campanhaId], references: [id])
+  etapaAtual     Int        @default(0) // índice da etapa/sequência de remarketing
+  proximoDisparo DateTime?
+  ultimoContato  DateTime?
+  ultimaResposta DateTime?
+
+  chatguruStatus     StatusChatGuru @default(NAO_SINCRONIZADO)
+  chatguruContatoId  String?
+  chatguruErro       String?
+
+  origemImportacaoId String?
+  origemImportacao   ImportacaoLote? @relation(fields: [origemImportacaoId], references: [id])
+
+  criadoEm  DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  mensagens    Mensagem[]
+  progresso    LeadCampanhaProgresso[]
+  filaEnvios   FilaEnvio[]
+  notificacoes Notificacao[]
+
+  @@index([email])
+  @@index([telefone])
+  @@map("leads")
+}
+
+// Seção 31 / 51 (unsubscribe_list) — lista de supressão consultada na
+// importação e antes de qualquer envio, independente do lead já existir ou não.
+model ListaSupressao {
+  id        String   @id @default(cuid())
+  email     String?  @unique
+  telefone  String?  @unique
+  motivo    String?
+  criadoEm  DateTime @default(now())
+
+  @@map("lista_supressao")
+}
+
+// Garante não-duplicidade por e-mail e telefone (checagem adicional é feita em código,
+// pois um dos dois campos pode ser nulo)
+model ImportacaoLote {
+  id            String   @id @default(cuid())
+  arquivoNome   String
+  totalLinhas   Int
+  leadsValidos  Int
+  leadsInvalidos Int
+  duplicados    Int
+  jaExistentes  Int
+  mapeamento    Json // ex: { "Nome Cliente": "nome", "Email": "email" }
+  importadoPorId String?
+  criadoEm      DateTime @default(now())
+
+  leads Lead[]
+
+  @@map("importacoes")
+}
+
+model ModeloEmail {
+  id        String   @id @default(cuid())
+  nome      String
+  assunto   String
+  corpoHtml String   // suporta {{nome}}, {{empresa}}, {{telefone}}, {{responsavel}}
+  anexos    Json?    // [{ nome, url, tipo, tamanho }] — enviados de verdade em todo disparo desta etapa
+  ativo     Boolean  @default(true)
+  criadoEm  DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  etapas CampanhaEtapa[]
+
+  @@map("modelos_email")
+}
+
+model Campanha {
+  id            String         @id @default(cuid())
+  nome          String
+  descricao     String?
+  status        StatusCampanha @default(ATIVA)
+  intervaloDias Int            @default(3) // intervalo padrão de remarketing
+
+  criadorId     String?
+  criador       Usuario?       @relation("CampanhaCriador", fields: [criadorId], references: [id])
+
+  // Seção 13 — responsável pela campanha e conta de envio
+  responsavelId String?
+  responsavel   Usuario?       @relation("CampanhaResponsavel", fields: [responsavelId], references: [id])
+  contaEmailId  String?
+  contaEmail    ContaEmail?    @relation(fields: [contaEmailId], references: [id])
+
+  dataInicio     DateTime?
+  horarioEnvio   String?  // ex: "09:00"
+
+  criadoEm      DateTime       @default(now())
+  atualizadoEm  DateTime       @updatedAt
+
+  etapas    CampanhaEtapa[]
+  leads     Lead[]
+  progresso LeadCampanhaProgresso[]
+  filaEnvios FilaEnvio[]
+
+  @@map("campanhas")
+}
+
+// Sequência de mensagens de uma campanha (etapa 0, 1, 2... a cada N dias)
+model CampanhaEtapa {
+  id          String   @id @default(cuid())
+  campanhaId  String
+  campanha    Campanha @relation(fields: [campanhaId], references: [id], onDelete: Cascade)
+  ordem       Int
+  modeloId    String
+  modelo      ModeloEmail @relation(fields: [modeloId], references: [id])
+  diasAposAnterior Int @default(3)
+
+  @@unique([campanhaId, ordem])
+  @@map("campanha_etapas")
+}
+
+model LeadCampanhaProgresso {
+  id          String   @id @default(cuid())
+  leadId      String
+  lead        Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  campanhaId  String
+  campanha    Campanha @relation(fields: [campanhaId], references: [id], onDelete: Cascade)
+  etapaAtual  Int      @default(0)
+  interrompida Boolean @default(false)
+  motivoParada String?
+  iniciadoEm  DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  @@unique([leadId, campanhaId])
+  @@map("lead_campanha_progresso")
+}
+
+// Seção 47/48 — fila de disparo com idempotência (nunca reenviar o mesmo item)
+model FilaEnvio {
+  id            String     @id @default(cuid())
+  chaveIdempotencia String  @unique // ex: `${leadId}:${campanhaId}:${etapaOrdem}`
+  leadId        String
+  lead          Lead       @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  campanhaId    String
+  campanha      Campanha   @relation(fields: [campanhaId], references: [id], onDelete: Cascade)
+  etapaOrdem    Int
+  horarioProgramado DateTime
+  status        StatusFila @default(PENDENTE)
+  tentativas    Int        @default(0)
+  ultimoErro    String?
+  processadoEm  DateTime?
+  criadoEm      DateTime   @default(now())
+
+  @@map("fila_envio")
+}
+
+model Mensagem {
+  id         String           @id @default(cuid())
+  leadId     String
+  lead       Lead             @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  direcao    DirecaoMensagem
+  assunto    String?
+  corpo      String
+  de         String?
+  para       String?
+  cc         String?
+  cco        String?
+  anexos     Json? // [{ nome, url, tipo, tamanho }]
+  rascunho   Boolean          @default(false)
+  pasta      PastaMensagem    @default(ENTRADA)
+  status     StatusEnvio      @default(PENDENTE)
+  usuarioId  String?
+  usuario    Usuario?         @relation("MensagemUsuario", fields: [usuarioId], references: [id])
+  campanhaEtapaOrdem Int?
+  contaEmailId String? // usada para calcular limites de disparo por hora/dia (seção 30)
+
+  encaminhadaDeId String?
+  encaminhadaDe   Mensagem? @relation("Encaminhamento", fields: [encaminhadaDeId], references: [id])
+  encaminhamentos Mensagem[] @relation("Encaminhamento")
+
+  gmailMessageId String? @unique
+  gmailThreadId  String?
+  chaveIdempotencia String? @unique // evita reenvio duplicado do mesmo disparo automático
+
+  // Rastreamento de abertura via pixel (seção "visualizado", estilo ✓✓ do WhatsApp).
+  // Sujeito a bloqueio de imagem remota pelo cliente de e-mail do lead — não é 100% confiável.
+  visualizadaEm DateTime?
+
+  // Corrige apenas o registro salvo no sistema — não altera o e-mail já entregue na
+  // caixa do lead (isso não é tecnicamente possível). Serve de nota interna/auditoria.
+  editadoEm DateTime?
+
+  criadoEm   DateTime         @default(now())
+
+  @@index([leadId])
+  @@index([contaEmailId, criadoEm])
+  @@map("mensagens")
+}
+
+model ChatGuruEvento {
+  id         String   @id @default(cuid())
+  leadId     String?
+  tipo       String   // CRIAR_CONTATO | ADICIONAR_ANOTACAO | ERRO
+  payload    Json?
+  sucesso    Boolean  @default(true)
+  erro       String?
+  criadoEm   DateTime @default(now())
+
+  @@map("chatguru_eventos")
+}
+
+// Seção 38/53 — todo webhook recebido é gravado antes de processar (idempotência)
+model EventoWebhook {
+  id              String   @id @default(cuid())
+  origem          String   // ex: "chatguru"
+  eventoExternoId String?  @unique // id enviado pela origem, se houver — evita processar 2x
+  payload         Json
+  processado      Boolean  @default(false)
+  erro            String?
+  criadoEm        DateTime @default(now())
+  processadoEm    DateTime?
+
+  @@map("webhook_events")
+}
+
+// Seção 16/49 — central de notificações
+model Notificacao {
+  id           String          @id @default(cuid())
+  destinatarioId String
+  destinatario Usuario         @relation(fields: [destinatarioId], references: [id])
+  tipo         TipoNotificacao
+  titulo       String
+  mensagem     String
+  leadId       String?
+  lead         Lead?           @relation(fields: [leadId], references: [id])
+  lida         Boolean         @default(false)
+  criadoEm     DateTime        @default(now())
+
+  @@index([destinatarioId, lida])
+  @@map("notificacoes")
+}
+
+// Seção 41 — relatório de login/logout/duração de sessão
+model SessaoLogin {
+  id         String    @id @default(cuid())
+  usuarioId  String
+  usuario    Usuario   @relation(fields: [usuarioId], references: [id])
+  entrada    DateTime  @default(now())
+  saida      DateTime?
+
+  @@map("sessoes_login")
+}
+
+model LogAuditoria {
+  id         String   @id @default(cuid())
+  usuarioId  String?
+  usuario    Usuario? @relation("AuditoriaUsuario", fields: [usuarioId], references: [id])
+  acao       String   // ex: "IMPORTOU_LEADS", "CRIOU_CAMPANHA", "RESPONDEU_LEAD"
+  entidade   String?  // ex: "Lead", "Campanha"
+  entidadeId String?
+  detalhes   Json?
+  criadoEm   DateTime @default(now())
+
+  @@index([entidade, entidadeId])
+  @@map("log_auditoria")
+}
+
+model Configuracao {
+  chave  String @id
+  valor  String
+  @@map("configuracoes")
+}
