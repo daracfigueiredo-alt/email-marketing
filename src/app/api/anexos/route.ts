@@ -1,21 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
-import { mkdir, writeFile } from "fs/promises";
-import path from "path";
+import { put } from "@vercel/blob";
 import { usuarioAtual } from "@/lib/session";
 
 /**
  * Upload de anexos (seção 22): PDF, DOCX, XLSX, JPG, PNG e outros formatos comuns.
  *
- * Armazenamento: disco local em `uploads/` na raiz do projeto — funciona bem
- * para desenvolvimento e para um servidor único. Em produção com múltiplas
- * instâncias, troque por um storage compartilhado (S3, Google Cloud Storage,
- * Azure Blob) mantendo a mesma interface: subir o arquivo e devolver uma URL.
+ * Armazenamento: Vercel Blob, em modo privado — o arquivo só pode ser lido de
+ * volta com o BLOB_READ_WRITE_TOKEN do servidor (nunca fica público na internet).
+ * A rota GET /api/anexos/[id] é quem intermedia o acesso, exigindo login.
  */
 // Anexos são enviados em base64 (~33% maior) dentro do e-mail — o Gmail limita a
 // mensagem completa a 25MB, então 15MB de anexo bruto deixa margem para isso.
 const TAMANHO_MAXIMO_MB = 15;
-const UPLOADS_DIR = path.join(process.cwd(), "uploads");
 
 export async function POST(req: NextRequest) {
   const usuario = await usuarioAtual();
@@ -29,17 +26,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ erro: `Arquivo maior que ${TAMANHO_MAXIMO_MB}MB (limite também depende do provedor de e-mail)` }, { status: 400 });
   }
 
-  await mkdir(UPLOADS_DIR, { recursive: true });
-
   const id = randomUUID();
   const nomeSanitizado = arquivo.name.replace(/[^\w.\-]/g, "_");
-  const nomeArquivoNoDisco = `${id}__${nomeSanitizado}`;
+  const pathnameNoBlob = `${id}__${nomeSanitizado}`;
   const buffer = Buffer.from(await arquivo.arrayBuffer());
-  await writeFile(path.join(UPLOADS_DIR, nomeArquivoNoDisco), buffer);
+
+  await put(pathnameNoBlob, buffer, {
+    access: "private",
+    addRandomSuffix: false,
+    contentType: arquivo.type || "application/octet-stream"
+  });
 
   return NextResponse.json({
     nome: arquivo.name,
-    url: `/api/anexos/${id}__${nomeSanitizado}`,
+    url: `/api/anexos/${pathnameNoBlob}`,
     tipo: arquivo.type || "application/octet-stream",
     tamanho: arquivo.size
   });

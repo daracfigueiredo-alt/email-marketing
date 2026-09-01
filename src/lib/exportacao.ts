@@ -31,7 +31,7 @@ export function gerarPDF(titulo: string, colunas: string[], linhas: (string | nu
     doc.on("error", reject);
 
     doc.fontSize(16).text(titulo, { align: "left" });
-    doc.fontSize(9).fillColor("#666").text(`Gerado em ${new Date().toLocaleString("pt-BR")}`, { align: "left" });
+    doc.fontSize(9).fillColor("#666").text(`Gerado em ${new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}`, { align: "left" });
     doc.moveDown();
 
     const larguraColuna = (doc.page.width - 80) / colunas.length;

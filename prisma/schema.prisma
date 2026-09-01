@@ -114,6 +114,8 @@ model Usuario {
   status       StatusUsuario  @default(ATIVO)
   criadoEm     DateTime       @default(now())
   ultimoAcesso DateTime?
+  resetSenhaToken   String?   @unique
+  resetSenhaExpira  DateTime?
 
   leadsResponsavel  Lead[]          @relation("LeadResponsavel")
   campanhasCriadas  Campanha[]      @relation("CampanhaCriador")
@@ -438,4 +440,42 @@ model Configuracao {
   chave  String @id
   valor  String
   @@map("configuracoes")
+}
+
+// Origem do lead sincronizado para o DFLINE (planilha "funil 2.1")
+enum OrigemLeadDfline {
+  CONSOLIDADO_2_1_5
+  PRODUTOR_RURAL
+  FORMULARIO_FATURAMENTO
+}
+
+// Rastreia cada linha da planilha já cadastrada como card no DFLINE (funil "Card
+// criado/novo", coluna "NOVO LEAD") — chave de idempotência para o webhook chamado
+// pelo cenário Make "1 - Cadastro ChatGuru", que não deve duplicar o card a cada rodada.
+model LeadDflineImportado {
+  id                  String           @id @default(cuid())
+  origemAba           OrigemLeadDfline
+  telefoneNormalizado String           @unique
+  dflineDealId        String
+  nome                String?
+  empresa             String?
+  equipe              String?
+  responsavelTexto    String?
+  sdrIdDfline         BigInt?
+  criadoEm            DateTime         @default(now())
+
+  @@map("leads_dfline_importados")
+}
+
+// Idempotência do espelho automático das abas Consolidado/Rural/Faturamento
+// para a aba única "Consolidado Único" na mesma planilha — evita reescrever a
+// mesma linha a cada rodada do cenário Make de espelho (pedido do usuário: uma
+// aba só para o DFLINE ler, sem duplicar linha por reenvio da aba inteira).
+model LeadEspelhadoUnico {
+  id                  String   @id @default(cuid())
+  telefoneNormalizado String   @unique
+  origemAba           String
+  criadoEm            DateTime @default(now())
+
+  @@map("leads_espelhados_unico")
 }

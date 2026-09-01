@@ -3,6 +3,15 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import RichTextEditor from "@/components/RichTextEditor";
+import { personalizarTexto } from "@/lib/personalizacao";
+
+interface ModeloEmail {
+  id: string;
+  nome: string;
+  assunto: string;
+  corpoHtml: string;
+  anexos?: { nome: string; url?: string; tipo?: string; tamanho?: number }[] | null;
+}
 
 interface Mensagem {
   id: string;
@@ -69,9 +78,48 @@ function MensagemCorrecao({ mensagem, onSalvo }: { mensagem: Mensagem; onSalvo: 
   );
 }
 
-export default function ThreadView({ lead, thread }: { lead: { id: string; nome: string; email: string | null }; thread: Mensagem[] }) {
+export default function ThreadView({
+  lead,
+  thread,
+  modelos
+}: {
+  lead: { id: string; nome: string; email: string | null; empresa: string | null; telefone: string | null; responsavel?: { nome: string } | null };
+  thread: Mensagem[];
+  modelos: ModeloEmail[];
+}) {
   const router = useRouter();
   const [modo, setModo] = useState<null | "responder" | "encaminhar">(null);
+  const [enviandoModelo, setEnviandoModelo] = useState(false);
+  const [erroModelo, setErroModelo] = useState<string | null>(null);
+
+  async function enviarModelo(modeloId: string) {
+    const modelo = modelos.find((m) => m.id === modeloId);
+    if (!modelo) return;
+    setEnviandoModelo(true);
+    setErroModelo(null);
+    try {
+      const dadosPersonalizacao = { nome: lead.nome, empresa: lead.empresa, email: lead.email, telefone: lead.telefone, responsavel: lead.responsavel?.nome };
+      const resp = await fetch(`/api/leads/${lead.id}/responder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assunto: personalizarTexto(modelo.assunto, dadosPersonalizacao),
+          corpo: personalizarTexto(modelo.corpoHtml, dadosPersonalizacao),
+          anexos: modelo.anexos || undefined,
+          rascunho: false
+        })
+      });
+      if (!resp.ok) {
+        const dados = await resp.json().catch(() => ({}));
+        throw new Error(dados.erro || "Falha ao enviar modelo");
+      }
+      router.refresh();
+    } catch (err: any) {
+      setErroModelo(err.message);
+    } finally {
+      setEnviandoModelo(false);
+    }
+  }
   const [assunto, setAssunto] = useState("");
   const [corpo, setCorpo] = useState("");
   const [cc, setCc] = useState("");
@@ -197,13 +245,39 @@ export default function ThreadView({ lead, thread }: { lead: { id: string; nome:
       </div>
 
       {!modo && (
-        <div className="flex gap-2">
-          <button onClick={() => setModo("responder")} className="text-sm bg-brand-500 hover:bg-brand-600 text-white rounded-md px-4 py-2">
-            RESPONDER
-          </button>
-          <button onClick={() => setModo("encaminhar")} className="text-sm border border-slate-300 rounded-md px-4 py-2 hover:bg-slate-50">
-            ENCAMINHAR
-          </button>
+        <div className="space-y-4">
+          {modelos.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-slate-500 mb-2">
+                ✉️ Enviar modelo{!lead.email && " (lead sem e-mail cadastrado)"} — clique para enviar na hora:
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {modelos.map((m) => (
+                  <button
+                    key={m.id}
+                    disabled={enviandoModelo || !lead.email}
+                    onClick={() => enviarModelo(m.id)}
+                    title={!lead.email ? "Lead sem e-mail cadastrado" : `Assunto: ${m.assunto}`}
+                    className="text-left border border-slate-300 rounded-md px-3 py-2 bg-white hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed max-w-xs"
+                  >
+                    <div className="text-sm font-medium text-slate-800">{m.nome}</div>
+                    <div className="text-xs text-slate-500 truncate">{m.assunto}</div>
+                  </button>
+                ))}
+              </div>
+              {enviandoModelo && <p className="text-xs text-slate-500 mt-2">Enviando...</p>}
+              {erroModelo && <p className="text-xs text-red-600 mt-2">{erroModelo}</p>}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button onClick={() => setModo("responder")} className="text-sm bg-brand-500 hover:bg-brand-600 text-white rounded-md px-4 py-2">
+              RESPONDER
+            </button>
+            <button onClick={() => setModo("encaminhar")} className="text-sm border border-slate-300 rounded-md px-4 py-2 hover:bg-slate-50">
+              ENCAMINHAR
+            </button>
+          </div>
         </div>
       )}
 

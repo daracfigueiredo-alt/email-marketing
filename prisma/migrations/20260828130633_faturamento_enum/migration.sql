@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "OrigemLeadDfline" ADD VALUE 'FORMULARIO_FATURAMENTO';

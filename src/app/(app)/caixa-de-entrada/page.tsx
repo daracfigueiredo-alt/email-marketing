@@ -28,7 +28,10 @@ export default async function CaixaDeEntradaPage({ searchParams }: { searchParam
   const thread = leadSelecionado
     ? await prisma.mensagem.findMany({ where: { leadId: leadSelecionado }, orderBy: { criadoEm: "asc" }, include: { usuario: true } })
     : [];
-  const lead = leadSelecionado ? await prisma.lead.findUnique({ where: { id: leadSelecionado } }) : null;
+  const lead = leadSelecionado
+    ? await prisma.lead.findUnique({ where: { id: leadSelecionado }, include: { responsavel: true } })
+    : null;
+  const modelos = await prisma.modeloEmail.findMany({ where: { ativo: true }, orderBy: { nome: "asc" } });
 
   return (
     <div className="flex h-[calc(100vh-3rem)] -m-6">
@@ -63,7 +66,7 @@ export default async function CaixaDeEntradaPage({ searchParams }: { searchParam
 
       {/* Conversa selecionada */}
       <div className="flex-1 bg-slate-50 overflow-y-auto">
-        {lead ? <ThreadView lead={lead} thread={thread as any} /> : <p className="text-sm text-slate-400 text-center py-10">Selecione uma conversa.</p>}
+        {lead ? <ThreadView lead={lead as any} thread={thread as any} modelos={modelos as any} /> : <p className="text-sm text-slate-400 text-center py-10">Selecione uma conversa.</p>}
       </div>
     </div>
   );

@@ -19,7 +19,11 @@ export async function PATCH(req: NextRequest) {
   const usuario = await usuarioAtual();
   if (!usuario) return NextResponse.json({ erro: "Não autenticado" }, { status: 401 });
 
-  const { id, lida } = await req.json();
-  await prisma.notificacao.updateMany({ where: { id, destinatarioId: usuario.id }, data: { lida } });
+  const { id, todas, lida } = await req.json();
+  if (todas) {
+    await prisma.notificacao.updateMany({ where: { destinatarioId: usuario.id, lida: false }, data: { lida: true } });
+  } else {
+    await prisma.notificacao.updateMany({ where: { id, destinatarioId: usuario.id }, data: { lida } });
+  }
   return NextResponse.json({ ok: true });
 }

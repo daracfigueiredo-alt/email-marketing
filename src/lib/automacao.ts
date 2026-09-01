@@ -27,6 +27,11 @@ const STATUS_QUE_INTERROMPEM = ["RESPONDEU", "EM_ATENDIMENTO", "CONVERTIDO", "NA
 const MAX_TENTATIVAS = 5;
 const BACKOFF_BASE_MINUTOS = 15;
 
+/** Horário local (Brasília) legível para anotações — não depende de process.env.TZ, que a Vercel não permite definir. */
+function agoraBrasiliaLegivel() {
+  return new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+}
+
 export async function interromperSequencia(leadId: string, campanhaId: string, motivo: string, novoStatus: "RESPONDEU" | "OPT_OUT" = "RESPONDEU") {
   await prisma.leadCampanhaProgresso.updateMany({
     where: { leadId, campanhaId },
@@ -267,7 +272,7 @@ export async function processarFilaEnvio() {
       if (item.lead.chatguruContatoId || item.lead.telefone) {
         await adicionarAnotacaoChatGuru(
           item.leadId,
-          `📧 E-MAIL MARKETING\nCampanha: ${item.campanha.nome}\nEtapa: E-mail ${etapa.ordem + 1}\nEnviado em: ${new Date().toLocaleString("pt-BR")}`
+          `📧 E-MAIL MARKETING\nCampanha: ${item.campanha.nome}\nEtapa: E-mail ${etapa.ordem + 1}\nEnviado em: ${agoraBrasiliaLegivel()}`
         ).catch(() => null);
       }
 
@@ -398,7 +403,7 @@ export async function tratarRespostaDetectada(leadId: string) {
     await interromperSequencia(leadId, progresso.campanhaId, "Lead respondeu ao e-mail.");
     await adicionarAnotacaoChatGuru(
       leadId,
-      `📩 CLIENTE RESPONDEU POR E-MAIL\nCampanha: ${progresso.campanha.nome}\nData: ${new Date().toLocaleString("pt-BR")}`
+      `📩 CLIENTE RESPONDEU POR E-MAIL\nCampanha: ${progresso.campanha.nome}\nData: ${agoraBrasiliaLegivel()}`
     ).catch(() => null);
     await notificarSobreLead({
       leadId,
