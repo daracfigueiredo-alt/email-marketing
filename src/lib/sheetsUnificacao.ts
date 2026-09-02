@@ -107,7 +107,7 @@ export function unificarConsolidado(valores: string[][]): string[][] {
   const iFaixaDivida = acharColuna(indices, [], ["sua divida e"]);
   const iSituacaoDivida = acharColuna(indices, [], ["situacao da divida", "situação da dívida"]);
   const iMeiosContato = acharColuna(indices, ["meios de contato"]);
-  const iCampanha = acharColuna(indices, [], ["campanha"]);
+  const iCampanha = acharColuna(indices, ["criativo"]); // coluna "criativo" (D) — não "campanha" (A), pedido do usuário
   const iDataEntrada = acharColuna(indices, ["data de entrada"]);
   const iObservacao = acharColuna(indices, [], ["observacao", "observação"]);
   const iStatusChat = acharColuna(indices, [], ["adcionado ao chat", "adicionado ao chat"]);
