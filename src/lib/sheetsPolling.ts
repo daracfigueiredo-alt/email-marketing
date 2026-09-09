@@ -13,7 +13,12 @@
  * nunca por posição fixa — os cabeçalhos diferem entre as três abas (a de
  * Faturamento usa formato "snake_case_com_pontuação_no_meio").
  */
-import { sincronizarLeadDfline, type PayloadSincronizacaoDfline } from "./sincronizacaoDfline";
+import {
+  sincronizarLeadDfline,
+  carregarContextoSincronizacaoDfline,
+  type PayloadSincronizacaoDfline,
+  type ContextoSincronizacaoDfline
+} from "./sincronizacaoDfline";
 
 export function normalizar(valor: string) {
   return (valor || "")
@@ -77,6 +82,13 @@ export async function processarConsolidado(valores: string[][]): Promise<Resulta
   const iDataEntrada = acharColuna(indices, ["data de entrada"]);
   const iObservacao = acharColuna(indices, [], ["observacao", "observação"]);
 
+  // Carregado sob demanda, uma única vez por chamada (na primeira linha
+  // candidata), e reaproveitado pelas demais — evita baixar a coleção
+  // "deals" do Firestore inteira de novo a cada linha da planilha (essa
+  // repetição foi a causa de um consumo de CPU muito acima do esperado no
+  // plano da Vercel; ver dflineFirestore.buscarTodosDealsPorTelefone).
+  let contexto: ContextoSincronizacaoDfline | undefined;
+
   for (let linha = 1; linha < valores.length; linha++) {
     const row = valores[linha];
     if (!row || !row.length) continue;
@@ -106,7 +118,8 @@ export async function processarConsolidado(valores: string[][]): Promise<Resulta
     };
 
     try {
-      const r = await sincronizarLeadDfline(payload);
+      contexto ??= await carregarContextoSincronizacaoDfline();
+      const r = await sincronizarLeadDfline(payload, contexto);
       if (r.duplicado) resultado.duplicados++;
       else resultado.sincronizados++;
     } catch (erro: any) {
@@ -138,6 +151,8 @@ export async function processarRural(valores: string[][]): Promise<ResultadoPoll
   const iOrigemDivida = acharColuna(indices, [], ["origem dessa divida", "origem dessa dívida"]);
   const iSituacaoCobranca = acharColuna(indices, [], ["situacao atual de cobranca", "situação atual de cobrança"]);
 
+  let contexto: ContextoSincronizacaoDfline | undefined;
+
   for (let linha = 1; linha < valores.length; linha++) {
     const row = valores[linha];
     if (!row || !row.length) continue;
@@ -162,7 +177,8 @@ export async function processarRural(valores: string[][]): Promise<ResultadoPoll
     };
 
     try {
-      const r = await sincronizarLeadDfline(payload);
+      contexto ??= await carregarContextoSincronizacaoDfline();
+      const r = await sincronizarLeadDfline(payload, contexto);
       if (r.duplicado) resultado.duplicados++;
       else resultado.sincronizados++;
     } catch (erro: any) {
@@ -214,6 +230,8 @@ export async function processarConsolidadoUnico(valores: string[][]): Promise<Re
     faturamento: "FORMULARIO_FATURAMENTO"
   };
 
+  let contexto: ContextoSincronizacaoDfline | undefined;
+
   for (let i = 1; i < valores.length; i++) {
     const row = valores[i];
     if (!row || !row.length) continue;
@@ -250,7 +268,8 @@ export async function processarConsolidadoUnico(valores: string[][]): Promise<Re
     };
 
     try {
-      const r = await sincronizarLeadDfline(payload);
+      contexto ??= await carregarContextoSincronizacaoDfline();
+      const r = await sincronizarLeadDfline(payload, contexto);
       if (r.duplicado) resultado.duplicados++;
       else resultado.sincronizados++;
     } catch (erro: any) {
@@ -278,6 +297,8 @@ export async function processarFaturamento(valores: string[][]): Promise<Resulta
   const iMeiosContato = acharColuna(indices, [], ["meios de contato"]);
   const iPorte = acharColuna(indices, [], ["porte da sua empresa"]);
   const iFaturamento = acharColuna(indices, [], ["faturamento medio mensal"]);
+
+  let contexto: ContextoSincronizacaoDfline | undefined;
 
   for (let linha = 1; linha < valores.length; linha++) {
     const row = valores[linha];
@@ -309,7 +330,8 @@ export async function processarFaturamento(valores: string[][]): Promise<Resulta
     };
 
     try {
-      const r = await sincronizarLeadDfline(payload);
+      contexto ??= await carregarContextoSincronizacaoDfline();
+      const r = await sincronizarLeadDfline(payload, contexto);
       if (r.duplicado) resultado.duplicados++;
       else resultado.sincronizados++;
     } catch (erro: any) {

@@ -10,8 +10,39 @@
 import { prisma } from "./prisma";
 import { registrarAuditoria } from "./audit";
 import { adicionarAnotacaoChatGuruPorTelefone } from "./chatguru";
-import { buscarDealPorTelefone, buscarEquipesEUsuarios, criarDealNoDfline } from "./dflineFirestore";
+import {
+  buscarDealPorTelefone,
+  buscarEquipesEUsuarios,
+  buscarTodosDealsPorTelefone,
+  criarDealNoDfline,
+  numeroComparavelBR,
+  type DealDfline
+} from "./dflineFirestore";
 import type { OrigemLeadDfline } from "@prisma/client";
+
+/**
+ * Contexto pré-carregado do Firestore (equipes/usuários + deals já
+ * existentes, indexados por telefone) — opcional. Quando quem chama
+ * sincronizarLeadDfline precisa checar vários leads seguidos (reprocessar
+ * uma planilha inteira, por exemplo), buscar isso uma vez e passar aqui
+ * evita baixar a coleção "deals" inteira do Firestore de novo a cada lead
+ * (ver dflineFirestore.buscarTodosDealsPorTelefone). Sem contexto, o
+ * comportamento é o de sempre: busca tudo do zero para este lead único —
+ * correto para o webhook, que trata um lead por vez.
+ */
+export type ContextoSincronizacaoDfline = {
+  equipes: string[];
+  usuarios: Array<{ id: number; name: string; role: string; team?: string }>;
+  dealsPorTelefone: Map<string, DealDfline>;
+};
+
+export async function carregarContextoSincronizacaoDfline(): Promise<ContextoSincronizacaoDfline> {
+  const [{ equipes, usuarios }, dealsPorTelefone] = await Promise.all([
+    buscarEquipesEUsuarios(),
+    buscarTodosDealsPorTelefone()
+  ]);
+  return { equipes, usuarios, dealsPorTelefone };
+}
 
 export type PayloadSincronizacaoDfline = {
   origemAba: OrigemLeadDfline;
@@ -79,7 +110,7 @@ function montarObservacaoInicial(payload: PayloadSincronizacaoDfline) {
   return linhas.join("\n");
 }
 
-export async function sincronizarLeadDfline(payload: PayloadSincronizacaoDfline) {
+export async function sincronizarLeadDfline(payload: PayloadSincronizacaoDfline, contexto?: ContextoSincronizacaoDfline) {
   const telefoneNormalizado = normalizarTelefone(payload.telefone);
   if (!telefoneNormalizado) {
     throw new Error("Lead sem telefone válido — não é possível sincronizar com o DFLINE.");
@@ -92,8 +123,12 @@ export async function sincronizarLeadDfline(payload: PayloadSincronizacaoDfline)
 
   // Segunda checagem, best-effort, contra deals já existentes no DFLINE criados por
   // outra via (import de Meta Lead Ads, cadastro manual etc.) — ver ressalva em
-  // dflineFirestore.buscarDealPorTelefone.
-  const dealExistente = await buscarDealPorTelefone(telefoneNormalizado).catch(() => null);
+  // dflineFirestore.buscarDealPorTelefone. Com contexto pré-carregado, é só uma
+  // consulta ao Map (nada de rede); sem contexto, cai no caminho antigo (busca
+  // tudo do zero) — mesmo resultado, só muda onde a coleção é baixada.
+  const dealExistente = contexto
+    ? (contexto.dealsPorTelefone.get(numeroComparavelBR(telefoneNormalizado)) ?? null)
+    : await buscarDealPorTelefone(telefoneNormalizado).catch(() => null);
   if (dealExistente) {
     await prisma.leadDflineImportado.create({
       data: {
@@ -109,7 +144,7 @@ export async function sincronizarLeadDfline(payload: PayloadSincronizacaoDfline)
     return { duplicado: true, dealId: dealExistente.id };
   }
 
-  const { equipes, usuarios } = await buscarEquipesEUsuarios();
+  const { equipes, usuarios } = contexto ?? (await buscarEquipesEUsuarios());
   const equipeMapeada = mapearEquipe(payload.equipe, equipes);
   const { sdrId, nomeEncontrado } = mapearResponsavel(payload.responsavel, usuarios);
 

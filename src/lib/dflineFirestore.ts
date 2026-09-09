@@ -52,7 +52,7 @@ function normalizarTelefone(telefone: string) {
  * em 2026-08-31). Esta função só serve pra COMPARAR — o telefone gravado no deal ou
  * em LeadDflineImportado continua sendo o valor original, sem essa normalização.
  */
-function numeroComparavelBR(telefone: string): string {
+export function numeroComparavelBR(telefone: string): string {
   let digitos = normalizarTelefone(telefone);
   if (digitos.length === 13 && digitos.startsWith("55")) digitos = digitos.slice(2);
   else if (digitos.length === 12 && digitos.startsWith("55")) digitos = digitos.slice(2);
@@ -92,6 +92,31 @@ export async function buscarDealPorTelefone(telefoneNormalizado: string) {
     }
   }
   return null;
+}
+
+export type DealDfline = { id: string; campos: FirebaseFirestore.DocumentData };
+
+/**
+ * Mesma checagem best-effort de buscarDealPorTelefone, mas baixando a coleção
+ * "deals" UMA VEZ e indexando por telefone em memória — para quando é preciso
+ * checar várias telefones seguidos (ex.: reprocessar uma planilha inteira),
+ * onde chamar buscarDealPorTelefone por linha baixaria a coleção inteira do
+ * Firestore de novo a cada linha (foi a causa de um consumo de CPU muito
+ * acima do esperado no plano da Vercel — ver auditoria de 2026-09).
+ */
+export async function buscarTodosDealsPorTelefone(): Promise<Map<string, DealDfline>> {
+  const snapshot = await firestoreAdmin().collection("escritorios").doc(officeId()).collection("deals").get();
+
+  const porTelefone = new Map<string, DealDfline>();
+  for (const doc of snapshot.docs) {
+    const campos = doc.data();
+    const telefoneDoc = campos.phone ? numeroComparavelBR(String(campos.phone)) : "";
+    // Em caso de dois deals com o mesmo telefone (não deveria acontecer, mas
+    // já vimos duplicidade manual no DFLINE), mantém o primeiro encontrado —
+    // mesmo desempate que um `for` sequencial teria.
+    if (telefoneDoc && !porTelefone.has(telefoneDoc)) porTelefone.set(telefoneDoc, { id: doc.id, campos });
+  }
+  return porTelefone;
 }
 
 export type NovoDealDfline = {
